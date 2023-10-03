@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use serialport::SerialPort;
 use speedy2d::{window::{WindowCreationOptions, WindowSize, WindowPosition, WindowHandler, WindowHelper, MouseScrollDistance, VirtualKeyCode, KeyScancode, MouseButton}, dimen::{Vector2, Vec2, UVec2}, Window, Graphics2D, image::{ImageDataType, ImageSmoothingMode}};
 use plotters::prelude::*;
@@ -77,7 +79,7 @@ fn main() {
 pub struct MyWindowHandler {
 	pub size: (u32, u32),
 	pub data: Vec<(f64, f64)>,
-	pub buffer: Vec<u8>,
+	pub pixel_buffer: Vec<u8>,
 	pub x: f64,
 	pub y: f64,
 	pub w: f64,
@@ -97,7 +99,9 @@ pub struct MyWindowHandler {
 	pub mm: bool,
 	pub port: Box<dyn SerialPort>,
 	pub min_sample_time: f64,
-	pub previous_sample_time: std::time::Instant
+	pub previous_sample_time: std::time::Instant,
+	pub buffer: VecDeque<u8>,
+	pub program_start: std::time::Instant
 }
 
 impl MyWindowHandler {
@@ -105,7 +109,7 @@ impl MyWindowHandler {
 		Self {
 			size: (size.x as u32, size.y as u32),
 			data: vec![(0.0, 0.0), (0.0, 0.1)],
-			buffer: vec![0; (size.x * size.y * 3.0) as usize],
+			pixel_buffer: vec![0; (size.x * size.y * 3.0) as usize],
 			x: 0.0,
 			y: 0.0,
 			w: 100.0,
@@ -125,7 +129,9 @@ impl MyWindowHandler {
 			mm: false,
 			port,
 			min_sample_time: 0.2,
-			previous_sample_time: std::time::Instant::now()
+			previous_sample_time: std::time::Instant::now(),
+			buffer: VecDeque::new(),
+			program_start: std::time::Instant::now()
 		}
 	}
 	
@@ -140,33 +146,38 @@ impl MyWindowHandler {
 impl WindowHandler for MyWindowHandler {
 	fn on_draw(&mut self, helper: &mut WindowHelper, graphics: &mut Graphics2D) {
 		
+		// Request new data if enough time has passed
 		let now = std::time::Instant::now();
 		if now.duration_since(self.previous_sample_time).as_millis() > (1000.0 * self.min_sample_time) as u128 {
-			let n = self.port.bytes_to_read().unwrap();
-			
-			if n >= 14 {
-				let mut serial_buf = vec![0; n as usize];
-				self.port.read(&mut serial_buf).unwrap();
+			self.port.write(b"MEAS:CURR:DC?\r").unwrap();
+			self.previous_sample_time = now;
+		}
+		
+		// Store any data that has been received
+		let n = self.port.bytes_to_read().unwrap();
+		if n > 0 {
+			let mut serial_buf = vec![0; n as usize];
+			self.port.read(&mut serial_buf).unwrap();
+			self.buffer.append(&mut VecDeque::from(serial_buf));
+		}
+		
+		// Parse any complete data packages
+		let mut i = 0;
+		while i < self.buffer.len() {
+			if self.buffer[i] == 13 {
+				let value = String::from_utf8(self.buffer.drain(0..i).collect()).unwrap().parse::<f64>().unwrap();
+				self.data.push((self.program_start.elapsed().as_secs_f64(), value * 1e12));
 				
-				println!("{:?}", serial_buf);
-				
-				println!("Received {n} bytes: {}\n\n", String::from_utf8(serial_buf).unwrap());
-				
-				self.previous_sample_time = now;
-			}
-			
-			if n == 0 {
-				self.port.write(b"MEAS:CURR:DC?\r").unwrap();
+				self.buffer.pop_front();
+				i = 0;
+			} else {
+				i += 1;
 			}
 		}
 		
 		
-		
-		
-		self.data.push((self.data.last().unwrap().0 + 1.0, (self.data.last().unwrap().1 + self.data.get(self.data.len() - 2).unwrap().1) % 10.0));
-		
 		{
-			let drawing_area = BitMapBackend::with_buffer(&mut self.buffer, self.size).into_drawing_area();
+			let drawing_area = BitMapBackend::with_buffer(&mut self.pixel_buffer, self.size).into_drawing_area();
 			drawing_area.fill(&WHITE).unwrap();
 			
 			let mut chart = ChartBuilder::on(&drawing_area)
@@ -194,7 +205,7 @@ impl WindowHandler for MyWindowHandler {
 			drawing_area.present().unwrap();
 		}
 		
-		let image = graphics.create_image_from_raw_pixels(ImageDataType::RGB, ImageSmoothingMode::Linear, self.size, &self.buffer).unwrap();
+		let image = graphics.create_image_from_raw_pixels(ImageDataType::RGB, ImageSmoothingMode::Linear, self.size, &self.pixel_buffer).unwrap();
 		graphics.draw_image((0.0, 0.0), &image);
 		
 		helper.request_redraw();
@@ -202,7 +213,7 @@ impl WindowHandler for MyWindowHandler {
 	
 	fn on_resize(&mut self, _helper: &mut WindowHelper<()>, size_pixels: UVec2) {
 		self.size = (size_pixels.x, size_pixels.y);
-		self.buffer = vec![0; (size_pixels.x * size_pixels.y * 3) as usize];
+		self.pixel_buffer = vec![0; (size_pixels.x * size_pixels.y * 3) as usize];
 	}
 	
 	fn on_key_down(&mut self, _helper: &mut WindowHelper<()>, virtual_key_code: Option<VirtualKeyCode>, _scancode: KeyScancode) {
