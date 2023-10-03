@@ -1,3 +1,4 @@
+use serialport::SerialPort;
 use speedy2d::{window::{WindowCreationOptions, WindowSize, WindowPosition, WindowHandler, WindowHelper, MouseScrollDistance, VirtualKeyCode, KeyScancode, MouseButton}, dimen::{Vector2, Vec2, UVec2}, Window, Graphics2D, image::{ImageDataType, ImageSmoothingMode}};
 use plotters::prelude::*;
 
@@ -9,7 +10,7 @@ fn main() {
 	let ports = serialport::available_ports().unwrap();
 	let n = ports.len();
 	
-	for p in ports {
+	for p in ports.clone() {
 		println!("Name: {}", p.port_name);
 		match p.port_type {
 			serialport::SerialPortType::UsbPort(info) => {
@@ -28,49 +29,37 @@ fn main() {
 	
 	if n == 0 {
 		println!("No serial ports connected.");
-		//return;
+		return;
 	}
 	
 	
 	
 	// setup picoammeter
-	/*
-	let mut port = serialport::new("COM1", 9600)
+	
+	//zero check
+	//units: nA -> Sci
+	
+	let mut port = serialport::new(&ports[0].port_name, 9600)
 		.stop_bits(serialport::StopBits::One)
 		.data_bits(serialport::DataBits::Eight)
 		.open()
 		.unwrap();
 	
 	let commands = [
-		"*RST\r",
-		"TRIG:DEL 0\r",
-		"TRIG:COUN 2000\r",
-		"NPLC .01\r",
-		"RANG .002\r",
-		"SYST:ZCH OFF\r",
-		"SYST:AZER:STAT OFF\r",
-		"DISP:ENAB OFF\r",
-		"*CLS\r",
-		"TRAC:POIN 2000\r",
-		"TRAC:CLE\r",
-		"TRAC:FEED:CONT NEXT\r",
-		"STAT:MEAS:ENAB 512\r",
-		"*SRE 1\r",
-		"*OPC?\r"
+		"*RST",
+		"ARM:COUN 1",
+		"DISP:DIG 5",
+		"SYST:ZCH OFF",
+		"SENS:CURR:NPLC 6",
+		"FORM:ELEM READ",
+		"TRIG:COUN 1"
 	];
 	
 	for command in commands {
 		port.write(command.as_bytes()).unwrap();
+		port.write(b"\r").unwrap();
 		std::thread::sleep(std::time::Duration::from_millis(50));
 	}
-	
-	
-	std::thread::sleep(std::time::Duration::from_millis(1000));
-	
-	let mut serial_buf = [0; 1024];
-	let n = port.read(&mut serial_buf).unwrap();
-	println!("Receivd {n} bytes: {}", String::from_utf8(serial_buf[..n].to_vec()).unwrap());
-	*/
 	
 	
 	// start loop
@@ -78,7 +67,7 @@ fn main() {
 	let size = Vector2 {x: 720.0, y: 405.0};
 	let options = WindowCreationOptions::new_windowed(WindowSize::ScaledPixels(size), Some(WindowPosition::Center)).with_vsync(true);
 	let window = Window::new_with_options("Picoammeter Readings", options).unwrap();
-	let w = MyWindowHandler::new(size);
+	let w = MyWindowHandler::new(size, port);
 	
 	window.run_loop(w);
 	
@@ -105,11 +94,14 @@ pub struct MyWindowHandler {
 	pub alt: bool,
 	pub ml: bool,
 	pub mr: bool,
-	pub mm: bool
+	pub mm: bool,
+	pub port: Box<dyn SerialPort>,
+	pub min_sample_time: f64,
+	pub previous_sample_time: std::time::Instant
 }
 
 impl MyWindowHandler {
-	pub fn new(size: Vector2<f32>) -> Self {
+	pub fn new(size: Vector2<f32>, port: Box<dyn SerialPort>) -> Self {
 		Self {
 			size: (size.x as u32, size.y as u32),
 			data: vec![(0.0, 0.0), (0.0, 0.1)],
@@ -130,7 +122,10 @@ impl MyWindowHandler {
 			alt: false,
 			ml: false,
 			mr: false,
-			mm: false
+			mm: false,
+			port,
+			min_sample_time: 0.2,
+			previous_sample_time: std::time::Instant::now()
 		}
 	}
 	
@@ -144,6 +139,29 @@ impl MyWindowHandler {
 
 impl WindowHandler for MyWindowHandler {
 	fn on_draw(&mut self, helper: &mut WindowHelper, graphics: &mut Graphics2D) {
+		
+		let now = std::time::Instant::now();
+		if now.duration_since(self.previous_sample_time).as_millis() > (1000.0 * self.min_sample_time) as u128 {
+			let n = self.port.bytes_to_read().unwrap();
+			
+			if n >= 14 {
+				let mut serial_buf = vec![0; n as usize];
+				self.port.read(&mut serial_buf).unwrap();
+				
+				println!("{:?}", serial_buf);
+				
+				println!("Received {n} bytes: {}\n\n", String::from_utf8(serial_buf).unwrap());
+				
+				self.previous_sample_time = now;
+			}
+			
+			if n == 0 {
+				self.port.write(b"MEAS:CURR:DC?\r").unwrap();
+			}
+		}
+		
+		
+		
 		
 		self.data.push((self.data.last().unwrap().0 + 1.0, (self.data.last().unwrap().1 + self.data.get(self.data.len() - 2).unwrap().1) % 10.0));
 		
@@ -256,6 +274,8 @@ impl WindowHandler for MyWindowHandler {
 		}
 		
 	}
+	
+	
 }
 
 
