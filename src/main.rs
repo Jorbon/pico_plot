@@ -266,6 +266,50 @@ impl MyWindowHandler {
 			false => self.bottom_pad
 		}
 	}
+	
+	pub fn render_plot(&mut self) -> Result<(), String> {
+		let drawing_area = BitMapBackend::with_buffer(&mut self.pixel_buffer, self.size).into_drawing_area();
+		
+		drawing_area.fill(&self.bg_color).map_err(|err| err.to_string())?;
+		
+		let mut chart = ChartBuilder::on(&drawing_area)
+			.x_label_area_size(match self.minimal { true => self.bottom_pad_min, false => self.bottom_pad })
+			.y_label_area_size(match self.minimal { true => self.left_pad_min, false => self.left_pad })
+			//.margin(15)
+			//.caption(&caption, ("sans-serif", 20).into_font())
+			.build_cartesian_2d(self.x..(self.x + self.w), self.y..(self.y + self.h)).map_err(|err| err.to_string())?;
+		
+		match self.minimal {
+			true => chart.configure_mesh()
+				.y_label_formatter(&|y| format!("{}", y))
+				.label_style(("sans-serif", 20, &self.fg_color))
+				.axis_style(&self.fg_color)
+				.bold_line_style(&self.fg_color.mix(0.2))
+				.light_line_style(&self.fg_color.mix(0.1))
+				.draw().map_err(|err| err.to_string())?,
+			false => chart.configure_mesh()
+				//.label_style(("sans-serif", 20))
+				.x_label_formatter(&|x| {
+					let seconds = (x + self.program_start_time_seconds) as u32;
+					format!("{}:{:02}:{:02}", seconds / 3600, (seconds / 60) % 60, seconds % 60)
+				})
+				.y_label_formatter(&|y| format!("{}pA", y))
+				.x_labels(10)
+				.label_style(("sans-serif", 20, &self.fg_color))
+				.axis_style(&self.fg_color)
+				.bold_line_style(&self.fg_color.mix(0.2))
+				.light_line_style(&self.fg_color.mix(0.1))
+				//.axis_desc_style(("sans-serif", 25))
+				//.x_desc("Time")
+				//.y_desc("Beam current (pA)")
+				.draw().map_err(|err| err.to_string())?
+		}
+		
+		chart.draw_series(LineSeries::new(self.data.clone(), &self.data_color)).map_err(|err| err.to_string())?;
+		drawing_area.present().map_err(|err| err.to_string())?;
+		
+		Ok(())
+	}
 }
 
 impl WindowHandler for MyWindowHandler {
@@ -282,29 +326,44 @@ impl WindowHandler for MyWindowHandler {
 			}
 			
 			// Store any data that has been received
-			let n = port.bytes_to_read().unwrap();
-			if n > 0 {
-				let mut serial_buf = vec![0; n as usize];
-				port.read(&mut serial_buf).unwrap();
-				self.buffer.append(&mut VecDeque::from(serial_buf));
+			match port.bytes_to_read() {
+				Ok(n) => {
+					if n > 0 {
+						let mut serial_buf = vec![0; n as usize];
+						match port.read(&mut serial_buf) {
+							Ok(_bytes) => self.buffer.append(&mut VecDeque::from(serial_buf)),
+							Err(err) => println!("Couldn't read received data: {err}")
+						}
+					}
+				}
+				Err(err) => println!("Couldn't read received data: {err}")
 			}
 			
 			// Parse any complete data packages
 			let mut i = 0;
 			while i < self.buffer.len() {
 				if self.buffer[i] == 13 {
-					let amps = String::from_utf8(self.buffer.drain(0..i).collect()).unwrap().parse::<f64>().unwrap();
-					let time = self.program_start.elapsed().as_secs_f64();
-					self.data.push((time, amps * 1e12));
-					self.buffer.pop_front();
-					i = 0;
-					
-					if self.follow {
-						if time < self.x {
-							self.x = time - 1.0;
-						} else if time > self.x + self.w {
-							self.x = time - self.w + 1.0;
+					match String::from_utf8(self.buffer.drain(0..i).collect()) {
+						Ok(s) => {
+							match s.parse::<f64>() {
+								Ok(amps) => {
+									let time = self.program_start.elapsed().as_secs_f64();
+									self.data.push((time, amps * 1e12));
+									self.buffer.pop_front();
+									i = 0;
+									
+									if self.follow {
+										if time < self.x {
+											self.x = time - 1.0;
+										} else if time > self.x + self.w {
+											self.x = time - self.w + 1.0;
+										}
+									}
+								}
+								Err(err) => println!("Received data was in an unexpected format: {err}")
+							}
 						}
+						Err(err) => println!("Received data was in an unexpected format: {err}")
 					}
 					
 				} else {
@@ -314,50 +373,17 @@ impl WindowHandler for MyWindowHandler {
 		}
 		
 		
-		{
-			let drawing_area = BitMapBackend::with_buffer(&mut self.pixel_buffer, self.size).into_drawing_area();
-			drawing_area.fill(&self.bg_color).unwrap();
-			
-			let mut chart = ChartBuilder::on(&drawing_area)
-				.x_label_area_size(match self.minimal { true => self.bottom_pad_min, false => self.bottom_pad })
-				.y_label_area_size(match self.minimal { true => self.left_pad_min, false => self.left_pad })
-				//.margin(15)
-				//.caption(&caption, ("sans-serif", 20).into_font())
-				.build_cartesian_2d(self.x..(self.x + self.w), self.y..(self.y + self.h)).unwrap();
-			
-			match self.minimal {
-				true => chart.configure_mesh()
-					.y_label_formatter(&|y| format!("{}", y))
-					.label_style(("sans-serif", 20, &self.fg_color))
-					.axis_style(&self.fg_color)
-					.bold_line_style(&self.fg_color.mix(0.2))
-					.light_line_style(&self.fg_color.mix(0.1))
-					.draw().unwrap(),
-				false => chart.configure_mesh()
-					//.label_style(("sans-serif", 20))
-					.x_label_formatter(&|x| {
-						let seconds = (x + self.program_start_time_seconds) as u32;
-						format!("{}:{:02}:{:02}", seconds / 3600, (seconds / 60) % 60, seconds % 60)
-					})
-					.y_label_formatter(&|y| format!("{}pA", y))
-					.x_labels(10)
-					.label_style(("sans-serif", 20, &self.fg_color))
-					.axis_style(&self.fg_color)
-					.bold_line_style(&self.fg_color.mix(0.2))
-					.light_line_style(&self.fg_color.mix(0.1))
-					//.axis_desc_style(("sans-serif", 25))
-					//.x_desc("Time")
-					//.y_desc("Beam current (pA)")
-					.draw().unwrap()
+		match self.render_plot() {
+			Ok(()) => {
+				match graphics.create_image_from_raw_pixels(ImageDataType::RGB, ImageSmoothingMode::Linear, self.size, &self.pixel_buffer) {
+					Ok(image) => graphics.draw_image((0.0, 0.0), &image),
+					Err(err) => println!("Couldn't display the plot: {err}")
+				}
 			}
-			
-			chart.draw_series(LineSeries::new(self.data.clone(), &self.data_color)).unwrap();
-			
-			drawing_area.present().unwrap();
+			Err(err) => println!("Couldn't display the plot: {err}")
 		}
 		
-		let image = graphics.create_image_from_raw_pixels(ImageDataType::RGB, ImageSmoothingMode::Linear, self.size, &self.pixel_buffer).unwrap();
-		graphics.draw_image((0.0, 0.0), &image);
+		
 		
 		helper.request_redraw();
 	}
@@ -460,6 +486,5 @@ impl WindowHandler for MyWindowHandler {
 	
 	
 }
-
 
 
