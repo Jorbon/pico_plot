@@ -7,9 +7,10 @@ use plotters::prelude::*;
 
 fn main() {
 	
+	
 	// List available serial ports
 	
-	let ports = serialport::available_ports().unwrap();
+	let ports = serialport::available_ports().unwrap_or_else(|err| panic!("Could not get info on serial ports: {err}"));
 	let n = ports.len();
 	
 	for p in ports.clone() {
@@ -17,9 +18,9 @@ fn main() {
 		match p.port_type {
 			serialport::SerialPortType::UsbPort(info) => {
 				println!("Type: USB\nVID: {:04x} PID: {:04x}", info.vid, info.pid);
-				println!("Serial number: {}", info.serial_number.unwrap_or(String::new()));
-				println!("Manufacturer: {}", info.manufacturer.unwrap_or(String::new()));
-				println!("Product: {}", info.product.unwrap_or(String::new()));
+				println!("Serial number: {}", info.serial_number.unwrap_or(String::from("N/A")));
+				println!("Manufacturer: {}", info.manufacturer.unwrap_or(String::from("N/A")));
+				println!("Product: {}", info.product.unwrap_or(String::from("N/A")));
 			}
 			serialport::SerialPortType::BluetoothPort => println!("Type: Bluetooth"),
 			serialport::SerialPortType::PciPort => println!("Type: PCI"),
@@ -29,39 +30,105 @@ fn main() {
 		println!();
 	}
 	
+	let cfg = get_config();
 	
-	let size = Vector2 {x: 720.0, y: 405.0};
+	let size = Vector2 { x: cfg.window_width as f32, y: cfg.window_height as f32 };
 	let options = WindowCreationOptions::new_windowed(WindowSize::ScaledPixels(size), Some(WindowPosition::Center)).with_vsync(true);
-	let window = Window::new_with_options("Picoammeter Readings", options).unwrap();
+	let window = Window::new_with_options("Picoammeter Readings", options).unwrap_or_else(|err| panic!("Could not create a plot window: {err}"));
 	
-	let w = MyWindowHandler::new(size, if n == 0 {
+	let w = MyWindowHandler::new(size, &cfg, if n == 0 {
 		println!("No serial port connections found.");
 		None
-		//return;
+		
 	} else {
-		let mut port = serialport::new(&ports[0].port_name, 9600)
-		.stop_bits(serialport::StopBits::One)
-		.data_bits(serialport::DataBits::Eight)
-		.open()
-		.unwrap();
 		
-		let commands = [
-			"*RST",
-			"ARM:COUN 1",
-			"DISP:DIG 5",
-			"SYST:ZCH OFF",
-			"SENS:CURR:NPLC 6",
-			"FORM:ELEM READ",
-			"TRIG:COUN 1"
-		];
+		let mut port_name = None;
 		
-		for command in commands {
-			port.write(command.as_bytes()).unwrap();
-			port.write(b"\r").unwrap();
-			std::thread::sleep(std::time::Duration::from_millis(50));
+		// Search for matching serial number
+		for p in &ports {
+			if let serialport::SerialPortType::UsbPort(info) = &p.port_type {
+				if let Some(sn) = &info.serial_number {
+					if *sn == cfg.serial_number {
+						port_name = Some(&p.port_name);
+						println!("Using port {} with matching serial number '{}'", p.port_name, *sn);
+						break;
+					}
+				}
+			}
 		}
 		
-		Some(port)
+		// Next search for matching manufacturer
+		if let None = port_name {
+			for p in &ports {
+				if let serialport::SerialPortType::UsbPort(info) = &p.port_type {
+					if let Some(m) = &info.manufacturer {
+						if *m == cfg.manufacturer {
+							port_name = Some(&p.port_name);
+							println!("No serial number match, using port {} with matching manufacturer '{}'", p.port_name, *m);
+							break;
+						}
+					}
+				}
+			}
+		}
+		
+		// Next use the first usb connection
+		if let None = port_name {
+			for p in &ports {
+				if let serialport::SerialPortType::UsbPort(_info) = &p.port_type {
+					port_name = Some(&p.port_name);
+					println!("No serial number or manufacturer match, using port {}", p.port_name);
+					break;
+				}
+			}
+		}
+		
+		let port_attempt = serialport::new(port_name.unwrap_or(&ports[0].port_name), 9600)
+		.stop_bits(serialport::StopBits::One)
+		.data_bits(serialport::DataBits::Eight)
+		.open();
+		
+		// Open port, just try the first port if none were selected
+		match port_attempt {
+			Ok(mut port) => {
+				let commands = [
+					"*RST",
+					"ARM:COUN 1",
+					"DISP:DIG 5",
+					"SYST:ZCH OFF",
+					"SENS:CURR:NPLC 6",
+					"FORM:ELEM READ",
+					"TRIG:COUN 1"
+				];
+				
+				let mut port_setup = true;
+				
+				for command in commands {
+					let mut c = String::from(command);
+					c.push('\r');
+					match port.write(c.as_bytes()) {
+						Ok(_) => (),
+						Err(_err) => {
+							println!("Couldn't send command: {command}");
+							port_setup = false;
+							break;
+						}
+					};
+					std::thread::sleep(std::time::Duration::from_millis(50));
+				}
+				
+				match port_setup {
+					true => Some(port),
+					false => None
+				}
+			}
+			Err(_) => {
+				println!("Could not open selected port {}", port_name.unwrap_or(&ports[0].port_name));
+				None
+			}
+		}
+		
+		
 	});
 	
 	
@@ -70,6 +137,46 @@ fn main() {
 	window.run_loop(w);
 	
 }
+
+
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Config {
+	pub serial_number: String,
+	pub manufacturer: String,
+	pub time_between_samples: f64,
+	pub time_zone_hour_offset: f64,
+	pub default_max_picoamps: f64,
+	pub default_min_picoamps: f64,
+	pub default_window_time: f64,
+	pub window_width: u32,
+	pub window_height: u32
+}
+
+impl std::default::Default for Config {
+    fn default() -> Self { Self {
+		serial_number: String::from("CZA"),
+		manufacturer: String::from("Prolific"),
+		time_between_samples: 0.5,
+		time_zone_hour_offset: -5.0,
+		default_max_picoamps: 5.0,
+		default_min_picoamps: -45.0,
+		default_window_time: 300.0,
+		window_width: 720,
+		window_height: 405
+	} }
+}
+
+pub fn get_config() -> Config {
+	confy::load("pico_plot", "config").unwrap_or_else(|_err| {
+		match confy::store("pico_plot", "config", Config::default()) {
+			Ok(()) => println!("Config not found, generated new config file with default settings."),
+			Err(_) => println!("Config not found and couldn't save a new config file, using default settings.")
+		}
+		Config::default()
+	})
+}
+
 
 
 pub struct MyWindowHandler {
@@ -106,15 +213,15 @@ pub struct MyWindowHandler {
 }
 
 impl MyWindowHandler {
-	pub fn new(size: Vector2<f32>, port: Option<Box<dyn SerialPort>>) -> Self {
+	pub fn new(size: Vector2<f32>, cfg: &Config, port: Option<Box<dyn SerialPort>>) -> Self {
 		Self {
 			size: (size.x as u32, size.y as u32),
 			data: vec![],
 			pixel_buffer: vec![0; (size.x * size.y * 3.0) as usize],
 			x: 0.0,
-			y: -45.0,
-			w: 300.0,
-			h: 50.0,
+			y: cfg.default_min_picoamps,
+			w: cfg.default_window_time,
+			h: cfg.default_max_picoamps - cfg.default_min_picoamps,
 			mx: size.x as f64 * 0.5,
 			my: size.y as f64 * 0.5,
 			left_pad: 70.0,
@@ -128,11 +235,11 @@ impl MyWindowHandler {
 			mr: false,
 			mm: false,
 			port,
-			min_sample_time: 0.5,
+			min_sample_time: cfg.time_between_samples,
 			previous_sample_time: std::time::Instant::now(),
 			buffer: VecDeque::new(),
 			program_start: std::time::Instant::now(),
-			program_start_time_seconds: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64() % 86400.0 - 18000.0,
+			program_start_time_seconds: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64() % 86400.0 + 3600.0 * cfg.time_zone_hour_offset,
 			minimal: true,
 			follow: true,
 			bg_color: RGBColor(0, 0, 0),
@@ -168,7 +275,9 @@ impl WindowHandler for MyWindowHandler {
 			// Request new data if enough time has passed
 			let now = std::time::Instant::now();
 			if now.duration_since(self.previous_sample_time).as_millis() > (1000.0 * self.min_sample_time) as u128 {
-				port.write(b"MEAS:CURR:DC?\r").unwrap();
+				if let Err(err) = port.write(b"MEAS:CURR:DC?\r") {
+					println!("Error requesting measurement: {err}");
+				};
 				self.previous_sample_time = now;
 			}
 			
@@ -278,11 +387,13 @@ impl WindowHandler for MyWindowHandler {
 				self.fg_color = RGBColor(0, 0, 0);
 			}
 			VirtualKeyCode::Space => {
+				let cfg = get_config();
 				self.follow = true;
-				self.w = 300.0;
-				self.h = 50.0;
-				self.y = -45.0;
+				self.w = cfg.default_window_time;
+				self.h = cfg.default_max_picoamps - cfg.default_min_picoamps;
+				self.y = cfg.default_min_picoamps;
 				self.x = f64::max(0.0, self.data.last().unwrap_or(&(0.0, 0.0)).0 - self.w + 1.0);
+				self.min_sample_time = cfg.time_between_samples;
 			}
 			_ => ()
 		}}

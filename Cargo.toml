@@ -9,3 +9,5 @@ edition = "2021"
 serialport = "*"
 plotters = "*"
 speedy2d = "*"
+serde = { version = "*", features = ["derive"] }
+confy = "*"
