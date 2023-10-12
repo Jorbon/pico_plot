@@ -168,13 +168,17 @@ impl std::default::Default for Config {
 }
 
 pub fn get_config() -> Config {
-	confy::load("pico_plot", "config").unwrap_or_else(|_err| {
-		match confy::store("pico_plot", "config", Config::default()) {
-			Ok(()) => println!("Config not found, generated new config file with default settings."),
-			Err(_) => println!("Config not found and couldn't save a new config file, using default settings.")
+	match std::env::current_exe() {
+		Ok(path) => confy::load_path(path.with_file_name("pico_plot_config.toml")).unwrap_or_else(|err| {
+			println!("Couldn't access config file: {err}");
+			Config::default()
+		}),
+		Err(err) => {
+			println!("Couldn't locate config file: {err}");
+			Config::default()
 		}
-		Config::default()
-	})
+	}
+	
 }
 
 
