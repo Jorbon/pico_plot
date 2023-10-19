@@ -7,7 +7,6 @@ use plotters::prelude::*;
 
 fn main() {
 	
-	
 	// List available serial ports
 	
 	let ports = serialport::available_ports().unwrap_or_else(|err| panic!("Could not get info on serial ports: {err}"));
@@ -130,8 +129,6 @@ fn main() {
 		
 		
 	});
-	
-	
 	
 	
 	window.run_loop(w);
