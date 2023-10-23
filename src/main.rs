@@ -32,10 +32,10 @@ fn main() {
 	let cfg = get_config();
 	
 	let size = Vector2 { x: cfg.window_width as f32, y: cfg.window_height as f32 };
-	let options = WindowCreationOptions::new_windowed(WindowSize::ScaledPixels(size), Some(WindowPosition::Center)).with_vsync(true);
+	let options = WindowCreationOptions::new_windowed(WindowSize::ScaledPixels(size), Some(WindowPosition::Center)).with_vsync(true).with_always_on_top(cfg.always_on_top);
 	let window = Window::new_with_options("Picoammeter Readings", options).unwrap_or_else(|err| panic!("Could not create a plot window: {err}"));
 	
-	let w = MyWindowHandler::new(size, &cfg, if n == 0 {
+	let port = if n == 0 {
 		println!("No serial port connections found.");
 		None
 		
@@ -126,10 +126,9 @@ fn main() {
 				None
 			}
 		}
-		
-		
-	});
+	};
 	
+	let w = MyWindowHandler::new(size, &cfg, port);
 	
 	window.run_loop(w);
 	
@@ -147,7 +146,8 @@ pub struct Config {
 	pub default_min_picoamps: f64,
 	pub default_window_time: f64,
 	pub window_width: u32,
-	pub window_height: u32
+	pub window_height: u32,
+	pub always_on_top: bool
 }
 
 impl std::default::Default for Config {
@@ -156,11 +156,12 @@ impl std::default::Default for Config {
 		manufacturer: String::from("Prolific"),
 		time_between_samples: 0.5,
 		time_zone_hour_offset: -5.0,
-		default_max_picoamps: 5.0,
-		default_min_picoamps: -45.0,
+		default_max_picoamps: 20.0,
+		default_min_picoamps: -140.0,
 		default_window_time: 300.0,
-		window_width: 720,
-		window_height: 405
+		window_width: 960,
+		window_height: 540,
+		always_on_top: true
 	} }
 }
 
@@ -210,7 +211,8 @@ pub struct MyWindowHandler {
 	pub follow: bool,
 	pub bg_color: RGBColor,
 	pub fg_color: RGBColor,
-	pub data_color: RGBColor
+	pub data_color: RGBColor,
+	pub vertical_flip: bool
 }
 
 impl MyWindowHandler {
@@ -245,7 +247,8 @@ impl MyWindowHandler {
 			follow: true,
 			bg_color: RGBColor(0, 0, 0),
 			fg_color: RGBColor(255, 255, 255),
-			data_color: RGBColor(255, 0, 0)
+			data_color: RGBColor(255, 0, 0),
+			vertical_flip: false
 		}
 	}
 	
@@ -273,12 +276,15 @@ impl MyWindowHandler {
 		
 		drawing_area.fill(&self.bg_color).map_err(|err| err.to_string())?;
 		
-		let mut chart = ChartBuilder::on(&drawing_area)
-			.x_label_area_size(match self.minimal { true => self.bottom_pad_min, false => self.bottom_pad })
-			.y_label_area_size(match self.minimal { true => self.left_pad_min, false => self.left_pad })
-			//.margin(15)
-			//.caption(&caption, ("sans-serif", 20).into_font())
-			.build_cartesian_2d(self.x..(self.x + self.w), self.y..(self.y + self.h)).map_err(|err| err.to_string())?;
+		let mut builder = ChartBuilder::on(&drawing_area);
+		builder.x_label_area_size(match self.minimal { true => self.bottom_pad_min, false => self.bottom_pad });
+		builder.y_label_area_size(match self.minimal { true => self.left_pad_min, false => self.left_pad });
+		
+		let mut chart = match self.vertical_flip {
+			true => builder.build_cartesian_2d(self.x..(self.x + self.w), (self.y + self.h)..self.y).map_err(|err| err.to_string())?,
+			false => builder.build_cartesian_2d(self.x..(self.x + self.w), self.y..(self.y + self.h)).map_err(|err| err.to_string())?
+		};
+		
 		
 		match self.minimal {
 			true => chart.configure_mesh()
@@ -322,7 +328,7 @@ impl WindowHandler for MyWindowHandler {
 			if now.duration_since(self.previous_sample_time).as_millis() > (1000.0 * self.min_sample_time) as u128 {
 				if let Err(err) = port.write(b"MEAS:CURR:DC?\r") {
 					println!("Error requesting measurement: {err}");
-				};
+				}
 				self.previous_sample_time = now;
 			}
 			
@@ -349,7 +355,8 @@ impl WindowHandler for MyWindowHandler {
 							match s.parse::<f64>() {
 								Ok(amps) => {
 									let time = self.program_start.elapsed().as_secs_f64();
-									self.data.push((time, amps * 1e12));
+									let picoamps = amps * 1e12;
+									self.data.push((time, picoamps));
 									self.buffer.pop_front();
 									i = 0;
 									
@@ -358,6 +365,12 @@ impl WindowHandler for MyWindowHandler {
 											self.x = time - 1.0;
 										} else if time > self.x + self.w {
 											self.x = time - self.w + 1.0;
+										}
+										if picoamps < self.y {
+											self.h += self.y - picoamps;
+											self.y = picoamps;
+										} else if picoamps > self.y + self.h {
+											self.h = picoamps - self.y;
 										}
 									}
 								}
@@ -401,6 +414,7 @@ impl WindowHandler for MyWindowHandler {
 			VirtualKeyCode::RAlt | VirtualKeyCode::LAlt => self.alt = true,
 			VirtualKeyCode::I => self.minimal = !self.minimal,
 			VirtualKeyCode::F => self.follow = !self.follow,
+			VirtualKeyCode::Y => self.vertical_flip = !self.vertical_flip,
 			VirtualKeyCode::D => {
 				self.bg_color = RGBColor(0, 0, 0);
 				self.fg_color = RGBColor(255, 255, 255);
@@ -477,7 +491,10 @@ impl WindowHandler for MyWindowHandler {
 			self.x += d * 0.0025 * (self.mx - self.get_left_pad()) * self.x_scale_factor();
 			self.w *= 1.0 - d * 0.0025;
 		} else if self.ctrl {
-			self.y += d * 0.0025 * (self.size.1 as f64 - self.my - self.get_bottom_pad()) * self.y_scale_factor();
+			self.y += d * 0.0025 * match self.vertical_flip {
+				true => self.my,
+				false => self.size.1 as f64 - self.my - self.get_bottom_pad()
+			} * self.y_scale_factor();
 			self.h *= 1.0 - d * 0.0025;
 		} else {
 			self.x -= d * self.x_scale_factor();
