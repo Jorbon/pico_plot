@@ -478,7 +478,7 @@ impl WindowHandler for MyWindowHandler {
 		
 		if self.ml || self.mr || self.mm {
 			self.x -= dx * self.x_scale_factor();
-			self.y += dy * self.y_scale_factor();
+			self.y -= dy * self.y_scale_factor() * match self.vertical_flip { true => 1.0, false => -1.0 };
 		}
 	}
 	
