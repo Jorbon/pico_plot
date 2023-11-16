@@ -53,6 +53,7 @@ pub struct Config {
 	pub default_max_picoamps: f64,
 	pub default_min_picoamps: f64,
 	pub default_window_time: f64,
+	pub stroke_width: u32,
 	pub window_width: u32,
 	pub window_height: u32,
 	pub always_on_top: bool
@@ -67,6 +68,7 @@ impl std::default::Default for Config {
 		default_max_picoamps: 20.0,
 		default_min_picoamps: -140.0,
 		default_window_time: 300.0,
+		stroke_width: 2,
 		window_width: 960,
 		window_height: 540,
 		always_on_top: true
@@ -214,6 +216,7 @@ pub struct MyWindowHandler {
 	pub bg_color: RGBColor,
 	pub fg_color: RGBColor,
 	pub data_color: RGBColor,
+	pub data_stroke_width: u32,
 	pub vertical_flip: bool
 }
 
@@ -250,6 +253,7 @@ impl MyWindowHandler {
 			bg_color: RGBColor(0, 0, 0),
 			fg_color: RGBColor(255, 255, 255),
 			data_color: RGBColor(255, 0, 0),
+			data_stroke_width: cfg.stroke_width,
 			vertical_flip: false
 		}
 	}
@@ -314,7 +318,7 @@ impl MyWindowHandler {
 				.draw().map_err(|err| err.to_string())?
 		}
 		
-		chart.draw_series(LineSeries::new(self.data.clone(), &self.data_color)).map_err(|err| err.to_string())?;
+		chart.draw_series(LineSeries::new(self.data.clone(), ShapeStyle::from(&self.data_color).stroke_width(self.data_stroke_width))).map_err(|err| err.to_string())?;
 		drawing_area.present().map_err(|err| err.to_string())?;
 		
 		Ok(())
