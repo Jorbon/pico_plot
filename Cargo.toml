@@ -8,6 +8,6 @@ edition = "2021"
 [dependencies]
 serialport = "*"
 plotters = "*"
-speedy2d = "*"
 serde = { version = "*", features = ["derive"] }
 confy = "*"
+simple_windows = { path = "../simple_windows" }

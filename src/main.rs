@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
+use serialport::SerialPort;
+use plotters::{prelude::*, backend::BGRXPixel};
+use simple_windows::{SimpleWindowApp, WindowHandle, Rect};
 
-use serialport::{SerialPort, SerialPortInfo};
-use speedy2d::{window::{WindowCreationOptions, WindowSize, WindowPosition, WindowHandler, WindowHelper, MouseScrollDistance, VirtualKeyCode, KeyScancode, MouseButton}, dimen::{Vector2, Vec2, UVec2}, Window, Graphics2D, image::{ImageDataType, ImageSmoothingMode}};
-use plotters::prelude::*;
+mod find_port;
+mod config;
 
 
 fn main() {
@@ -28,167 +30,27 @@ fn main() {
 		println!();
 	}
 	
-	let cfg = get_config();
+	let cfg = config::get_config();
+	let port = find_port::find_port(&cfg, ports);
 	
-	let size = Vector2 { x: cfg.window_width as f32, y: cfg.window_height as f32 };
-	let options = WindowCreationOptions::new_windowed(WindowSize::ScaledPixels(size), Some(WindowPosition::Center)).with_vsync(true).with_always_on_top(cfg.always_on_top);
-	let window = Window::new_with_options("Picoammeter Readings", options).unwrap_or_else(|err| panic!("Could not create a plot window: {err}"));
+	let app = App::new(&cfg, port);
 	
-	let port = find_port(&cfg, ports);
+	let result = simple_windows::run_window_process("pico plot", cfg.window_width, cfg.window_height, "Picoammeter Readings", cfg.always_on_top, app);
 	
-	let w = MyWindowHandler::new(size, &cfg, port);
-	
-	window.run_loop(w);
-	
-}
-
-
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Config {
-	pub serial_number: String,
-	pub manufacturer: String,
-	pub time_between_samples: f64,
-	pub time_zone_hour_offset: f64,
-	pub default_max_picoamps: f64,
-	pub default_min_picoamps: f64,
-	pub default_window_time: f64,
-	pub stroke_width: u32,
-	pub window_width: u32,
-	pub window_height: u32,
-	pub always_on_top: bool
-}
-
-impl std::default::Default for Config {
-    fn default() -> Self { Self {
-		serial_number: String::from("CZA"),
-		manufacturer: String::from("Prolific"),
-		time_between_samples: 0.5,
-		time_zone_hour_offset: -5.0,
-		default_max_picoamps: 20.0,
-		default_min_picoamps: -140.0,
-		default_window_time: 300.0,
-		stroke_width: 2,
-		window_width: 960,
-		window_height: 540,
-		always_on_top: true
-	} }
-}
-
-pub fn get_config() -> Config {
-	match std::env::current_exe() {
-		Ok(path) => confy::load_path(path.with_file_name("pico_plot_config.toml")).unwrap_or_else(|err| {
-			println!("Couldn't access config file: {err}");
-			Config::default()
-		}),
-		Err(err) => {
-			println!("Couldn't locate config file: {err}");
-			Config::default()
-		}
+	match result {
+		Ok(_) => {},
+		Err(err) => println!("{err}")
 	}
 	
 }
 
 
-pub fn find_port(cfg: &Config, ports: Vec<SerialPortInfo>) -> Option<Box<dyn SerialPort>> {
-	if ports.len() == 0 {
-		println!("No serial port connections found.");
-		return None;
-	}
-	
-	let mut port_name = None;
-	
-	// Search for matching serial number
-	for p in &ports {
-		if let serialport::SerialPortType::UsbPort(info) = &p.port_type {
-			if let Some(sn) = &info.serial_number {
-				if *sn == cfg.serial_number {
-					port_name = Some(&p.port_name);
-					println!("Using port {} with matching serial number '{}'", p.port_name, *sn);
-					break;
-				}
-			}
-		}
-	}
-	
-	// Next search for matching manufacturer
-	if let None = port_name {
-		for p in &ports {
-			if let serialport::SerialPortType::UsbPort(info) = &p.port_type {
-				if let Some(m) = &info.manufacturer {
-					if *m == cfg.manufacturer {
-						port_name = Some(&p.port_name);
-						println!("No serial number match, using port {} with matching manufacturer '{}'", p.port_name, *m);
-						break;
-					}
-				}
-			}
-		}
-	}
-	
-	// Next use the first usb connection
-	if let None = port_name {
-		for p in &ports {
-			if let serialport::SerialPortType::UsbPort(_info) = &p.port_type {
-				port_name = Some(&p.port_name);
-				println!("No serial number or manufacturer match, using port {}", p.port_name);
-				break;
-			}
-		}
-	}
-	
-	let port_attempt = serialport::new(port_name.unwrap_or(&ports[0].port_name), 9600)
-	.stop_bits(serialport::StopBits::One)
-	.data_bits(serialport::DataBits::Eight)
-	.open();
-	
-	// Open port, just try the first port if none were selected
-	match port_attempt {
-		Ok(mut port) => {
-			let commands = [
-				"*RST",
-				"ARM:COUN 1",
-				"DISP:DIG 5",
-				"SYST:ZCH OFF",
-				"SENS:CURR:NPLC 6",
-				"FORM:ELEM READ",
-				"TRIG:COUN 1"
-			];
-			
-			let mut port_setup = true;
-			
-			for command in commands {
-				let mut c = String::from(command);
-				c.push('\r');
-				match port.write(c.as_bytes()) {
-					Ok(_) => (),
-					Err(_err) => {
-						println!("Couldn't send command: {command}");
-						port_setup = false;
-						break;
-					}
-				};
-				std::thread::sleep(std::time::Duration::from_millis(50));
-			}
-			
-			match port_setup {
-				true => Some(port),
-				false => None
-			}
-		}
-		Err(_) => {
-			println!("Could not open selected port {}", port_name.unwrap_or(&ports[0].port_name));
-			None
-		}
-	}
-}
 
 
 
-pub struct MyWindowHandler {
-	pub size: (u32, u32),
+
+pub struct App {
 	pub data: Vec<(f64, f64)>,
-	pub pixel_buffer: Vec<u8>,
 	pub x: f64,
 	pub y: f64,
 	pub w: f64,
@@ -201,7 +63,6 @@ pub struct MyWindowHandler {
 	pub bottom_pad_min: f64,
 	pub shift: bool,
 	pub ctrl: bool,
-	pub alt: bool,
 	pub ml: bool,
 	pub mr: bool,
 	pub mm: bool,
@@ -220,25 +81,22 @@ pub struct MyWindowHandler {
 	pub vertical_flip: bool
 }
 
-impl MyWindowHandler {
-	pub fn new(size: Vector2<f32>, cfg: &Config, port: Option<Box<dyn SerialPort>>) -> Self {
+impl App {
+	pub fn new(cfg: &config::Config, port: Option<Box<dyn SerialPort>>) -> Self {
 		Self {
-			size: (size.x as u32, size.y as u32),
 			data: vec![],
-			pixel_buffer: vec![0; (size.x * size.y * 3.0) as usize],
 			x: 0.0,
 			y: cfg.default_min_picoamps,
 			w: cfg.default_window_time,
 			h: cfg.default_max_picoamps - cfg.default_min_picoamps,
-			mx: size.x as f64 * 0.5,
-			my: size.y as f64 * 0.5,
+			mx: 0.0,
+			my: 0.0,
 			left_pad: 70.0,
 			left_pad_min: 45.0,
 			bottom_pad: 35.0,
 			bottom_pad_min: 0.0,
 			shift: false,
 			ctrl: false,
-			alt: false,
 			ml: false,
 			mr: false,
 			mm: false,
@@ -258,11 +116,11 @@ impl MyWindowHandler {
 		}
 	}
 	
-	pub fn x_scale_factor(&self) -> f64 {
-		self.w / (self.size.0 as f64 - self.get_left_pad())
+	pub fn x_scale_factor(&self, width: u32) -> f64 {
+		self.w / (width as f64 - self.get_left_pad())
 	}
-	pub fn y_scale_factor(&self) -> f64 {
-		self.h / (self.size.1 as f64 - self.get_bottom_pad())
+	pub fn y_scale_factor(&self, height: u32) -> f64 {
+		self.h / (height as f64 - self.get_bottom_pad())
 	}
 	pub fn get_left_pad(&self) -> f64 {
 		match self.minimal {
@@ -277,8 +135,8 @@ impl MyWindowHandler {
 		}
 	}
 	
-	pub fn render_plot(&mut self) -> Result<(), String> {
-		let drawing_area = BitMapBackend::with_buffer(&mut self.pixel_buffer, self.size).into_drawing_area();
+	pub fn render_plot(&mut self, pixel_buffer: &mut [u8], width: u32, height: u32) -> Result<(), String> {
+		let drawing_area = BitMapBackend::<BGRXPixel>::with_buffer_and_format(pixel_buffer, (width, height)).map_err(|err| err.to_string())?.into_drawing_area();
 		
 		drawing_area.fill(&self.bg_color).map_err(|err| err.to_string())?;
 		
@@ -325,190 +183,206 @@ impl MyWindowHandler {
 	}
 }
 
-impl WindowHandler for MyWindowHandler {
-	fn on_draw(&mut self, helper: &mut WindowHelper, graphics: &mut Graphics2D) {
+impl SimpleWindowApp for App {
+	fn on_paint(&mut self, handle: &WindowHandle, pixel_buffer: &mut [u8], client_rect: &Rect) {
 		
-		if let Some(ref mut port) = self.port {
-			// Request new data if enough time has passed
+		if let Some(ref mut _port) = self.port {
+			// If a long time has passed without a request sent, the timer loop was broken and needs to be restarted
 			let now = std::time::Instant::now();
-			if now.duration_since(self.previous_sample_time).as_millis() > (1000.0 * self.min_sample_time) as u128 {
-				if let Err(err) = port.write(b"MEAS:CURR:DC?\r") {
-					println!("Error requesting measurement: {err}");
-				}
-				self.previous_sample_time = now;
+			if now.duration_since(self.previous_sample_time).as_secs_f64() > self.min_sample_time * 10.0 {
+				handle.set_timer(1, (self.min_sample_time * 1000.0) as u32);
 			}
-			
-			// Store any data that has been received
-			match port.bytes_to_read() {
-				Ok(n) => {
-					if n > 0 {
-						let mut serial_buf = vec![0; n as usize];
-						match port.read(&mut serial_buf) {
-							Ok(_bytes) => self.buffer.append(&mut VecDeque::from(serial_buf)),
-							Err(err) => println!("Couldn't read received data: {err}")
-						}
+		}
+		
+		self.render_plot(pixel_buffer, client_rect.width() as u32, client_rect.height() as u32).unwrap_or_else(|err| println!("Couldn't display the plot: {err}"));
+		
+	}
+	
+	fn on_timer(&mut self, handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, timer_id: usize) {
+		match timer_id {
+			1 => {
+				// Repeat this timer at the configured sample rate
+				handle.set_timer(1, (self.min_sample_time * 1000.0) as u32);
+				
+				if let Some(ref mut port) = self.port {
+					
+					self.previous_sample_time = std::time::Instant::now();
+					
+					// Send data request
+					if let Err(err) = port.write(b"MEAS:CURR:DC?\r") {
+						println!("Error requesting measurement: {err}");
 					}
-				}
-				Err(err) => println!("Couldn't read received data: {err}")
-			}
-			
-			// Parse any complete data packages
-			let mut i = 0;
-			while i < self.buffer.len() {
-				if self.buffer[i] == 13 {
-					match String::from_utf8(self.buffer.drain(0..i).collect()) {
-						Ok(s) => {
-							match s.parse::<f64>() {
-								Ok(amps) => {
-									let time = self.program_start.elapsed().as_secs_f64();
-									let picoamps = amps * 1e12;
-									self.data.push((time, picoamps));
-									self.buffer.pop_front();
-									i = 0;
-									
-									if self.follow {
-										if time < self.x {
-											self.x = time - 1.0;
-										} else if time > self.x + self.w {
-											self.x = time - self.w + 1.0;
+					
+					// Store any data that has been received
+					match port.bytes_to_read() {
+						Ok(n) => {
+							if n > 0 {
+								let mut serial_buf = vec![0; n as usize];
+								match port.read(&mut serial_buf) {
+									Ok(_bytes) => self.buffer.append(&mut VecDeque::from(serial_buf)),
+									Err(err) => println!("Couldn't read received data: {err}")
+								}
+							}
+						}
+						Err(err) => println!("Couldn't read received data: {err}")
+					}
+					
+					// Parse any complete data packages
+					let mut i = 0;
+					while i < self.buffer.len() {
+						if self.buffer[i] == 13 {
+							match String::from_utf8(self.buffer.drain(0..i).collect()) {
+								Ok(s) => {
+									match s.parse::<f64>() {
+										Ok(amps) => {
+											let time = self.program_start.elapsed().as_secs_f64();
+											let picoamps = amps * 1e12;
+											self.data.push((time, picoamps));
+											self.buffer.pop_front();
+											i = 0;
+											
+											if self.follow {
+												if time < self.x {
+													self.x = time - 1.0;
+												} else if time > self.x + self.w {
+													self.x = time - self.w + 1.0;
+												}
+												if picoamps < self.y {
+													self.h += self.y - picoamps;
+													self.y = picoamps;
+												} else if picoamps > self.y + self.h {
+													self.h = picoamps - self.y;
+												}
+											}
 										}
-										if picoamps < self.y {
-											self.h += self.y - picoamps;
-											self.y = picoamps;
-										} else if picoamps > self.y + self.h {
-											self.h = picoamps - self.y;
-										}
+										Err(err) => println!("Received data was in an unexpected format: {err}")
 									}
 								}
 								Err(err) => println!("Received data was in an unexpected format: {err}")
 							}
+							
+						} else {
+							i += 1;
 						}
-						Err(err) => println!("Received data was in an unexpected format: {err}")
 					}
 					
-				} else {
-					i += 1;
+					
 				}
-			}
+			},
+			_ => ()
 		}
-		
-		
-		match self.render_plot() {
-			Ok(()) => {
-				match graphics.create_image_from_raw_pixels(ImageDataType::RGB, ImageSmoothingMode::Linear, self.size, &self.pixel_buffer) {
-					Ok(image) => graphics.draw_image((0.0, 0.0), &image),
-					Err(err) => println!("Couldn't display the plot: {err}")
-				}
-			}
-			Err(err) => println!("Couldn't display the plot: {err}")
-		}
-		
-		
-		
-		helper.request_redraw();
 	}
 	
-	fn on_resize(&mut self, _helper: &mut WindowHelper<()>, size_pixels: UVec2) {
-		self.size = (size_pixels.x, size_pixels.y);
-		self.pixel_buffer = vec![0; (size_pixels.x * size_pixels.y * 3) as usize];
-	}
-	
-	fn on_key_down(&mut self, _helper: &mut WindowHelper<()>, virtual_key_code: Option<VirtualKeyCode>, _scancode: KeyScancode) {
-		if let Some(keycode) = virtual_key_code { match keycode {
-			VirtualKeyCode::RShift | VirtualKeyCode::LShift => self.shift = true,
-			VirtualKeyCode::RControl | VirtualKeyCode::LControl => self.ctrl = true,
-			VirtualKeyCode::RAlt | VirtualKeyCode::LAlt => self.alt = true,
-			VirtualKeyCode::I => self.minimal = !self.minimal,
-			VirtualKeyCode::F => self.follow = !self.follow,
-			VirtualKeyCode::Y => self.vertical_flip = !self.vertical_flip,
-			VirtualKeyCode::D => {
+	fn on_key_down(&mut self, handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, key_code: u32) {
+		match key_code {
+			16 => self.shift = true,
+			17 => self.ctrl = true,
+			73 => {
+				self.minimal = !self.minimal;
+				handle.request_redraw();
+			}
+			70 => self.follow = !self.follow,
+			89 => {
+				self.vertical_flip = !self.vertical_flip;
+				handle.request_redraw();
+			}
+			68 => {
 				self.bg_color = RGBColor(0, 0, 0);
 				self.fg_color = RGBColor(255, 255, 255);
+				handle.request_redraw();
 			}
-			VirtualKeyCode::L => {
+			76 => {
 				self.bg_color = RGBColor(255, 255, 255);
 				self.fg_color = RGBColor(0, 0, 0);
+				handle.request_redraw();
 			}
-			VirtualKeyCode::S => {
+			83 => {
 				self.bg_color = RGBColor(255, 239, 207);
 				self.fg_color = RGBColor(0, 0, 0);
+				handle.request_redraw();
 			}
-			VirtualKeyCode::Space => {
-				let cfg = get_config();
+			32 => {
+				let cfg = config::get_config();
 				self.follow = true;
 				self.w = cfg.default_window_time;
 				self.h = cfg.default_max_picoamps - cfg.default_min_picoamps;
 				self.y = cfg.default_min_picoamps;
 				self.x = f64::max(0.0, self.data.last().unwrap_or(&(0.0, 0.0)).0 - self.w + 1.0);
 				self.min_sample_time = cfg.time_between_samples;
+				
+				handle.request_redraw();
 			}
 			_ => ()
-		}}
+		}
 	}
 	
-	fn on_key_up(&mut self, _helper: &mut WindowHelper<()>, virtual_key_code: Option<VirtualKeyCode>, _scancode: KeyScancode) {
-		if let Some(keycode) = virtual_key_code { match keycode {
-			VirtualKeyCode::RShift | VirtualKeyCode::LShift => self.shift = false,
-			VirtualKeyCode::RControl | VirtualKeyCode::LControl => self.ctrl = false,
-			VirtualKeyCode::RAlt | VirtualKeyCode::LAlt => self.alt = false,
+	fn on_key_up(&mut self, _handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, key_code: u32) {
+		match key_code {
+			16 => self.shift = false,
+			17 => self.ctrl = false,
 			_ => ()
-		}}
-	}
-	
-	fn on_mouse_button_down(&mut self, _helper: &mut WindowHelper<()>, button: MouseButton) {
-		match button {
-			MouseButton::Left => self.ml = true,
-			MouseButton::Right => self.mr = true,
-			MouseButton::Middle => self.mm = true,
-			MouseButton::Other(_) => ()
 		}
 	}
 	
-	fn on_mouse_button_up(&mut self, _helper: &mut WindowHelper<()>, button: MouseButton) {
-		match button {
-			MouseButton::Left => self.ml = false,
-			MouseButton::Right => self.mr = false,
-			MouseButton::Middle => self.mm = false,
-			MouseButton::Other(_) => ()
-		}
+	fn on_mouse_left_down(&mut self, _handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, _mouse_x: i16, _mouse_y: i16) {
+		self.ml = true;
 	}
 	
-	fn on_mouse_move(&mut self, _helper: &mut WindowHelper<()>, position: Vec2) {
-		let dx = position.x as f64 - self.mx;
-		let dy = position.y as f64 - self.my;
+	fn on_mouse_middle_down(&mut self, _handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, _mouse_x: i16, _mouse_y: i16) {
+		self.mm = true;
+	}
+	
+	fn on_mouse_right_down(&mut self, _handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, _mouse_x: i16, _mouse_y: i16) {
+		self.mr = true;
+	}
+	
+	fn on_mouse_left_up(&mut self, _handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, _mouse_x: i16, _mouse_y: i16) {
+		self.ml = false;
+	}
+	
+	fn on_mouse_middle_up(&mut self, _handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, _mouse_x: i16, _mouse_y: i16) {
+		self.mm = false;
+	}
+	
+	fn on_mouse_right_up(&mut self, _handle: &WindowHandle, _pixel_buffer: &mut [u8], _client_rect: &Rect, _mouse_x: i16, _mouse_y: i16) {
+		self.mr = false;
+	}
+	
+	
+	
+	fn on_mouse_move(&mut self, handle: &WindowHandle, _pixel_buffer: &mut [u8], client_rect: &Rect, mouse_x: i16, mouse_y: i16) {
+		let dx = mouse_x as f64 - self.mx;
+		let dy = mouse_y as f64 - self.my;
 		
-		self.mx = position.x as f64;
-		self.my = position.y as f64;
+		self.mx = mouse_x as f64;
+		self.my = mouse_y as f64;
 		
 		if self.ml || self.mr || self.mm {
-			self.x -= dx * self.x_scale_factor();
-			self.y -= dy * self.y_scale_factor() * match self.vertical_flip { true => 1.0, false => -1.0 };
+			self.x -= dx * self.x_scale_factor(client_rect.width() as u32);
+			self.y -= dy * self.y_scale_factor(client_rect.height() as u32) * match self.vertical_flip { true => 1.0, false => -1.0 };
+			
+			handle.request_redraw();
 		}
 	}
 	
-	fn on_mouse_wheel_scroll(&mut self, _helper: &mut WindowHelper<()>, distance: MouseScrollDistance) {
-		let d = match distance {
-			MouseScrollDistance::Pixels { x: _, y, z: _ } => y,
-			MouseScrollDistance::Lines { x: _, y, z: _ } => y * 20.0,
-			MouseScrollDistance::Pages { x: _, y, z: _ } => y * 100.0
-		};
+	fn on_scroll(&mut self, handle: &WindowHandle, _pixel_buffer: &mut [u8], client_rect: &Rect, scroll_distance: i16) {
+		let distance = scroll_distance as f64 * 0.0005;
 		
 		if self.shift {
-			self.x += d * 0.0025 * (self.mx - self.get_left_pad()) * self.x_scale_factor();
-			self.w *= 1.0 - d * 0.0025;
+			self.x += distance * (self.mx - self.get_left_pad()) * self.x_scale_factor(client_rect.width() as u32);
+			self.w *= 1.0 - distance;
 		} else if self.ctrl {
-			self.y += d * 0.0025 * match self.vertical_flip {
+			self.y += distance * match self.vertical_flip {
 				true => self.my,
-				false => self.size.1 as f64 - self.my - self.get_bottom_pad()
-			} * self.y_scale_factor();
-			self.h *= 1.0 - d * 0.0025;
+				false => client_rect.height() as f64 - self.my - self.get_bottom_pad()
+			} * self.y_scale_factor(client_rect.height() as u32);
+			self.h *= 1.0 - distance;
 		} else {
-			self.x -= d * self.x_scale_factor();
+			self.x -= distance * 500.0 * self.x_scale_factor(client_rect.width() as u32);
 		}
 		
+		handle.request_redraw();
 	}
-	
-	
 }
 
 
