@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use serialport::SerialPort;
 use plotters::{prelude::*, backend::BGRXPixel};
-use simple_windows::{SimpleWindowApp, WindowHandle, Rect};
+use simple_windows::{SimpleWindowApp, WindowHandle, Rect, Menu};
 
 mod find_port;
 mod config;
@@ -184,6 +184,32 @@ impl App {
 }
 
 impl SimpleWindowApp for App {
+	fn on_init(&mut self, handle: &WindowHandle) {
+		let make_menu = || -> Result<(), String> {
+			let plot_menu = Menu::new()?;
+			plot_menu.add_item(73, "Reduced info")?;
+			plot_menu.add_item(89, "Flip vertically")?;
+			plot_menu.add_item(70, "Follow data")?;
+			
+			let themes_menu = Menu::new()?;
+			themes_menu.add_item(68, "Dark")?;
+			themes_menu.add_item(76, "Light")?;
+			themes_menu.add_item(83, "Sepia")?;
+			
+			let menu = handle.get_menu().ok_or("Couldn't get window menu")?;
+			menu.add_submenu(plot_menu, "Plot")?;
+			menu.add_submenu(themes_menu, "Themes")?;
+			menu.add_item(32, "Reset View")?;
+			Ok(())
+		};
+		
+		if let Err(err) = make_menu() {
+			println!("Error creating menu: {err}");
+		}
+	}
+	fn on_command(&mut self, handle: &WindowHandle, pixel_buffer: &mut [u8], client_rect: &Rect, command_id: u16) {
+		self.on_key_down(handle, pixel_buffer, client_rect, command_id as u32);
+	}
 	fn on_paint(&mut self, handle: &WindowHandle, pixel_buffer: &mut [u8], client_rect: &Rect) {
 		
 		if let Some(ref mut _port) = self.port {
@@ -254,6 +280,8 @@ impl SimpleWindowApp for App {
 													self.h = picoamps - self.y;
 												}
 											}
+											
+											handle.request_redraw();
 										}
 										Err(err) => println!("Received data was in an unexpected format: {err}")
 									}
