@@ -200,6 +200,8 @@ impl SimpleWindowApp for App {
 			menu.add_submenu(plot_menu, "Plot")?;
 			menu.add_submenu(themes_menu, "Themes")?;
 			menu.add_item(32, "Reset View")?;
+			
+			handle.redraw_menu()?;
 			Ok(())
 		};
 		
