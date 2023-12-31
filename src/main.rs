@@ -190,11 +190,13 @@ impl SimpleWindowApp for App {
 			plot_menu.add_item(73, "Reduced info")?;
 			plot_menu.add_item(89, "Flip vertically")?;
 			plot_menu.add_item(70, "Follow data")?;
+			plot_menu.set_item_check(70, true)?;
 			
 			let themes_menu = Menu::new()?;
 			themes_menu.add_item(68, "Dark")?;
 			themes_menu.add_item(76, "Light")?;
 			themes_menu.add_item(83, "Sepia")?;
+			themes_menu.set_item_check(68, true)?;
 			
 			let menu = handle.get_menu().ok_or("Couldn't get window menu")?;
 			menu.add_submenu(plot_menu, "Plot")?;
@@ -309,26 +311,64 @@ impl SimpleWindowApp for App {
 			17 => self.ctrl = true,
 			73 => {
 				self.minimal = !self.minimal;
+				if let Some(menu) = handle.get_menu() {
+					if let Some(plot_menu) = menu.get_submenu(0) {
+						plot_menu.set_item_check(73, self.minimal).unwrap_or(());
+					}
+				}
 				handle.request_redraw();
 			}
-			70 => self.follow = !self.follow,
+			70 => {
+				self.follow = !self.follow;
+				if let Some(menu) = handle.get_menu() {
+					if let Some(plot_menu) = menu.get_submenu(0) {
+						plot_menu.set_item_check(70, self.follow).unwrap_or(());
+					}
+				}
+			}
 			89 => {
 				self.vertical_flip = !self.vertical_flip;
+				if let Some(menu) = handle.get_menu() {
+					if let Some(plot_menu) = menu.get_submenu(0) {
+						plot_menu.set_item_check(89, self.vertical_flip).unwrap_or(());
+					}
+				}
 				handle.request_redraw();
 			}
 			68 => {
 				self.bg_color = RGBColor(0, 0, 0);
 				self.fg_color = RGBColor(255, 255, 255);
+				if let Some(menu) = handle.get_menu() {
+					if let Some(themes_menu) = menu.get_submenu(1) {
+						themes_menu.set_item_check(68, true).unwrap_or(());
+						themes_menu.set_item_check(76, false).unwrap_or(());
+						themes_menu.set_item_check(83, false).unwrap_or(());
+					}
+				}
 				handle.request_redraw();
 			}
 			76 => {
 				self.bg_color = RGBColor(255, 255, 255);
 				self.fg_color = RGBColor(0, 0, 0);
+				if let Some(menu) = handle.get_menu() {
+					if let Some(themes_menu) = menu.get_submenu(1) {
+						themes_menu.set_item_check(68, false).unwrap_or(());
+						themes_menu.set_item_check(76, true).unwrap_or(());
+						themes_menu.set_item_check(83, false).unwrap_or(());
+					}
+				}
 				handle.request_redraw();
 			}
 			83 => {
 				self.bg_color = RGBColor(255, 239, 207);
 				self.fg_color = RGBColor(0, 0, 0);
+				if let Some(menu) = handle.get_menu() {
+					if let Some(themes_menu) = menu.get_submenu(1) {
+						themes_menu.set_item_check(68, false).unwrap_or(());
+						themes_menu.set_item_check(76, false).unwrap_or(());
+						themes_menu.set_item_check(83, true).unwrap_or(());
+					}
+				}
 				handle.request_redraw();
 			}
 			32 => {
